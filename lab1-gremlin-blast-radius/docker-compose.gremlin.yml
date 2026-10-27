@@ -7,6 +7,11 @@ services:
     container_name: gremlin-agent
     command: daemon
     network_mode: host
+    # cgroup v2 (AL2023): o driver docker-linux precisa entrar nos namespaces do host
+    pid: host
+    cgroup: host
+    # /sys/fs/cgroup precisa ser gravavel para o Gremlin entrar no cgroup do alvo
+    privileged: true
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -14,6 +19,8 @@ services:
       - SYS_BOOT
       - SYS_TIME
       - KILL
+      - SYS_ADMIN
+      - SYS_PTRACE
     environment:
       GREMLIN_TEAM_ID: ${GREMLIN_TEAM_ID}
       GREMLIN_TEAM_SECRET: ${GREMLIN_TEAM_SECRET}
