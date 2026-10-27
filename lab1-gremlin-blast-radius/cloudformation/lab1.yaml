@@ -140,6 +140,10 @@ Resources:
           curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
             -o /usr/local/lib/docker/cli-plugins/docker-compose
           chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          # buildx do AL2023 e antigo; o compose atual exige >= 0.17 para 'build'
+          curl -fsSL https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-amd64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-buildx
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
 
           # 1 GB de swap (t3.micro tem 1 GB de RAM)
           fallocate -l 1G /swapfile
