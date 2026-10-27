@@ -44,6 +44,7 @@ export REPO_URL=https://github.com/SEU_USUARIO/sre-chaos-lab.git   # repositóri
 ```
 
 O bootstrap leva ~3–5 min (log em `/var/log/lab-setup.log` na instância).
+Para voltar ao normal após um ataque (containers parados não reiniciam sozinhos; não há Auto Scaling): `./scripts/restore.sh`.
 Para remover: `./scripts/destroy.sh`.
 
 ## Experimentos
