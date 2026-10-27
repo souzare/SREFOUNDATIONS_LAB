@@ -33,7 +33,7 @@ sre-chaos-lab/
 
 ## Pré-requisitos
 
-- Conta AWS de sandbox (free tier/créditos) com **VPC default** na região e AWS CLI v2 atualizado (`aws aiops help` deve existir)
+- Conta AWS de sandbox (free tier/créditos) e AWS CLI v2 atualizado (`aws aiops help` deve existir)
 - [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (Lab 1 na AWS)
 - `curl`, `bash`; Docker + Compose v2 (Lab 1 local)
 - Conta **Gremlin Free** – Team ID e Team Secret em *Company Settings → Teams → Configuration*

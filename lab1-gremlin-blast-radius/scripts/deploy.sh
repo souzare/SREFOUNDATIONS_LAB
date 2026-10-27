@@ -19,6 +19,15 @@ aws ssm put-parameter --region "$REGION" --overwrite --type SecureString \
 aws ssm put-parameter --region "$REGION" --overwrite --type SecureString \
   --name /sre-lab/gremlin/team_secret --value "$GREMLIN_TEAM_SECRET" >/dev/null
 
+# Stack que falhou antes fica em ROLLBACK_COMPLETE e nao pode ser atualizada: remove e recria.
+STATUS=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
+  --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo NONE)
+if [[ "$STATUS" == "ROLLBACK_COMPLETE" || "$STATUS" == "CREATE_FAILED" ]]; then
+  echo "Stack anterior em $STATUS: removendo antes de recriar..."
+  aws cloudformation delete-stack --region "$REGION" --stack-name "$STACK"
+  aws cloudformation wait stack-delete-complete --region "$REGION" --stack-name "$STACK"
+fi
+
 aws cloudformation deploy --region "$REGION" --stack-name "$STACK" \
   --template-file "$ROOT/cloudformation/lab1.yaml" \
   --capabilities CAPABILITY_IAM \

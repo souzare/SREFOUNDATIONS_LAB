@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Lab 1 SRE Foundation - EC2 free tier com Docker, 3 celulas, loadgen e agente Gremlin.
-  Sem portas abertas (acesso via SSM Session Manager). Requer VPC default na regiao.
+  Sem portas abertas (acesso via SSM Session Manager). Cria a propria VPC/subnet publica.
 
 Parameters:
   InstanceType:
@@ -22,9 +22,58 @@ Parameters:
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
 
 Resources:
+  # Rede propria do lab (nao depende de VPC default). Sem custo: sem NAT Gateway.
+  LabVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.77.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: sre-lab1-vpc }
+
+  LabIgw:
+    Type: AWS::EC2::InternetGateway
+
+  LabIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref LabVpc
+      InternetGatewayId: !Ref LabIgw
+
+  LabSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVpc
+      CidrBlock: 10.77.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - { Key: Name, Value: sre-lab1-public }
+
+  LabRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref LabVpc
+
+  LabDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: LabIgwAttachment
+    Properties:
+      RouteTableId: !Ref LabRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref LabIgw
+
+  LabSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref LabSubnet
+      RouteTableId: !Ref LabRouteTable
+
   LabSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      VpcId: !Ref LabVpc
       GroupDescription: Sem ingress; acesso via SSM Session Manager
       SecurityGroupEgress:
         - IpProtocol: '-1'
@@ -57,11 +106,16 @@ Resources:
 
   LabInstance:
     Type: AWS::EC2::Instance
+    DependsOn: [LabDefaultRoute, LabSubnetRouteAssociation]
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: !Ref InstanceType
       IamInstanceProfile: !Ref LabInstanceProfile
-      SecurityGroupIds: [!GetAtt LabSecurityGroup.GroupId]
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref LabSubnet
+          GroupSet: [!Ref LabSecurityGroup]
+          AssociatePublicIpAddress: true
       MetadataOptions:
         HttpTokens: required
       BlockDeviceMappings:
