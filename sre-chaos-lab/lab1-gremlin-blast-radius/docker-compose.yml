@@ -1,0 +1,53 @@
+name: sre-cells
+
+x-cell: &cell
+  build: ./app
+  image: sre-lab/cell-app:latest
+  restart: "no"          # o Gremlin controla o ciclo de vida durante os ataques
+  deploy:
+    resources:
+      limits:
+        cpus: "0.5"
+        memory: 128M
+
+services:
+  cell-a:
+    <<: *cell
+    container_name: cell-a
+    environment: { CELL_NAME: cell-a }
+    labels: { cell: a, tier: cell, lab: sre-foundation }
+
+  cell-b:
+    <<: *cell
+    container_name: cell-b
+    environment: { CELL_NAME: cell-b }
+    labels: { cell: b, tier: cell, lab: sre-foundation }
+
+  cell-c:
+    <<: *cell
+    container_name: cell-c
+    environment: { CELL_NAME: cell-c }
+    labels: { cell: c, tier: cell, lab: sre-foundation }
+
+  router:
+    image: nginx:1.27-alpine
+    container_name: router
+    volumes:
+      - ./router/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on: [cell-a, cell-b, cell-c]
+    labels: { tier: router, lab: sre-foundation }
+
+  loadgen:
+    build: ./loadgen
+    image: sre-lab/loadgen:latest
+    container_name: loadgen
+    environment:
+      TARGET: http://router
+      CUSTOMERS: "30"
+      SLO_PERCENT: "99"
+    ports:
+      - "8081:8081"
+    depends_on: [router]
+    labels: { tier: loadgen, lab: sre-foundation }

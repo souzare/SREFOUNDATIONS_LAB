@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Lab 2 SRE Foundation - API Gateway + Lambda + DynamoDB + alarme de erros +
+  role para o CloudWatch investigations. Dimensionado para free tier.
+
+Parameters:
+  Name:
+    Type: String
+    Default: sre-lab-orders
+
+Resources:
+  # DynamoDB provisionado 5/5 (dentro do always-free de 25/25)
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Name}-table'
+      BillingMode: PROVISIONED
+      ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+      AttributeDefinitions:
+        - { AttributeName: order_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: order_id, KeyType: HASH }
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Name}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Policies:
+        - PolicyName: ddb-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:GetItem]
+                Resource: !GetAtt OrdersTable.Arn
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Name}-fn'
+      RetentionInDays: 7
+
+  OrdersFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LogGroup
+    Properties:
+      FunctionName: !Sub '${Name}-fn'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref OrdersTable
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import os
+          import time
+          import uuid
+
+          import boto3
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          ddb = boto3.client("dynamodb")
+
+
+          def _resp(status, body):
+              return {
+                  "statusCode": status,
+                  "headers": {"content-type": "application/json"},
+                  "body": json.dumps(body),
+              }
+
+
+          def handler(event, context):
+              table = os.environ["TABLE_NAME"]
+              method = event["requestContext"]["http"]["method"]
+              try:
+                  if method == "POST":
+                      body = json.loads(event.get("body") or "{}")
+                      order_id = str(uuid.uuid4())
+                      ddb.put_item(
+                          TableName=table,
+                          Item={
+                              "order_id": {"S": order_id},
+                              "item": {"S": str(body.get("item", "widget"))},
+                              "created": {"N": str(int(time.time()))},
+                          },
+                      )
+                      logger.info("order_created order_id=%s table=%s", order_id, table)
+                      return _resp(201, {"order_id": order_id})
+                  order_id = event["pathParameters"]["id"]
+                  res = ddb.get_item(TableName=table, Key={"order_id": {"S": order_id}})
+                  if "Item" not in res:
+                      return _resp(404, {"error": "not found"})
+                  return _resp(200, {"order_id": order_id, "item": res["Item"]["item"]["S"]})
+              except Exception:
+                  # re-lanca para a metrica Errors do Lambda ser incrementada
+                  logger.exception("order_failed method=%s table=%s", method, table)
+                  raise
+
+  Api:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${Name}-api'
+      ProtocolType: HTTP
+
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt OrdersFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  PostOrdersRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: 'POST /orders'
+      Target: !Sub 'integrations/${Integration}'
+
+  GetOrderRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: 'GET /orders/{id}'
+      Target: !Sub 'integrations/${Integration}'
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref Api
+      StageName: $default
+      AutoDeploy: true
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OrdersFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/*'
+
+  # SLI de erros
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${Name}-lambda-errors'
+      AlarmDescription: Erros na funcao de pedidos (SLI de erros)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - { Name: FunctionName, Value: !Ref OrdersFunction }
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  # Role usada pelo CloudWatch investigations (o grupo e criado por scripts/setup-investigation-group.sh)
+  InvestigationsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Name}-investigations-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: aiops.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AIOpsAssistantPolicy
+
+Outputs:
+  Region:
+    Value: !Ref AWS::Region
+  ApiUrl:
+    Value: !GetAtt Api.ApiEndpoint
+  FunctionName:
+    Value: !Ref OrdersFunction
+  TableName:
+    Value: !Ref OrdersTable
+  LambdaRoleName:
+    Value: !Ref LambdaRole
+  AlarmName:
+    Value: !Ref ErrorsAlarm
+  InvestigationsRoleArn:
+    Value: !GetAtt InvestigationsRole.Arn

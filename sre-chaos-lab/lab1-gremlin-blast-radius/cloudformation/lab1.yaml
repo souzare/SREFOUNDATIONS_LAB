@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Lab 1 SRE Foundation - EC2 free tier com Docker, 3 celulas, loadgen e agente Gremlin.
+  Sem portas abertas (acesso via SSM Session Manager). Requer VPC default na regiao.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: Free tier eligible (verifique na sua conta/regiao)
+  RepoUrl:
+    Type: String
+    Description: URL https do repositorio publico que contem este lab
+  RepoBranch:
+    Type: String
+    Default: main
+  LabPath:
+    Type: String
+    Default: lab1-gremlin-blast-radius
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  LabSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Sem ingress; acesso via SSM Session Manager
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+
+  LabRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: read-gremlin-params
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/sre-lab/gremlin/*'
+
+  LabInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref LabRole]
+
+  LabInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref LabInstanceProfile
+      SecurityGroupIds: [!GetAtt LabSecurityGroup.GroupId]
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeSize: 16, VolumeType: gp3 }
+      Tags:
+        - { Key: Name, Value: sre-lab1-gremlin }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          exec > >(tee /var/log/lab-setup.log) 2>&1
+
+          dnf install -y docker git
+          systemctl enable --now docker
+
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+          # 1 GB de swap (t3.micro tem 1 GB de RAM)
+          fallocate -l 1G /swapfile
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+          mkdir -p /var/lib/gremlin /var/log/gremlin
+
+          git clone --depth 1 --branch ${RepoBranch} ${RepoUrl} /opt/lab
+          cd /opt/lab/${LabPath}
+
+          TEAM_ID=$(aws ssm get-parameter --region ${AWS::Region} --name /sre-lab/gremlin/team_id --with-decryption --query Parameter.Value --output text)
+          TEAM_SECRET=$(aws ssm get-parameter --region ${AWS::Region} --name /sre-lab/gremlin/team_secret --with-decryption --query Parameter.Value --output text)
+
+          cat > .env <<EOF
+          GREMLIN_TEAM_ID=$TEAM_ID
+          GREMLIN_TEAM_SECRET=$TEAM_SECRET
+          GREMLIN_IDENTIFIER=sre-lab-host
+          EOF
+          chmod 600 .env
+
+          docker compose --env-file .env -f docker-compose.yml -f docker-compose.gremlin.yml up -d --build
+          echo "LAB READY"
+
+Outputs:
+  InstanceId:
+    Value: !Ref LabInstance
+  Region:
+    Value: !Ref AWS::Region

@@ -1,0 +1,25 @@
+# Overlay: agente Gremlin no host Docker.
+# Uso: docker compose --env-file .env -f docker-compose.yml -f docker-compose.gremlin.yml up -d --build
+# Confira os parâmetros atuais em https://www.gremlin.com/docs (instalação do agente em Docker).
+services:
+  gremlin:
+    image: gremlin/gremlin
+    container_name: gremlin-agent
+    command: daemon
+    network_mode: host
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_BOOT
+      - SYS_TIME
+      - KILL
+    environment:
+      GREMLIN_TEAM_ID: ${GREMLIN_TEAM_ID}
+      GREMLIN_TEAM_SECRET: ${GREMLIN_TEAM_SECRET}
+      GREMLIN_IDENTIFIER: ${GREMLIN_IDENTIFIER:-sre-lab-host}
+      GREMLIN_CLIENT_TAGS: "lab=sre-foundation"
+    volumes:
+      - /var/lib/gremlin:/var/lib/gremlin
+      - /var/log/gremlin:/var/log/gremlin
+      - /var/run/docker.sock:/var/run/docker.sock
