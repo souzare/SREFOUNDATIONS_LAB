@@ -38,4 +38,6 @@ IID=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK
 echo
 echo "Instancia: $IID"
 echo "O bootstrap leva ~3-5 min. Acompanhe: aws ssm start-session --region $REGION --target $IID  (tail -f /var/log/lab-setup.log)"
-echo "Dashboard: ./scripts/port-forward.sh 8081  ->  http://localhost:8081"
+URL=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
+  --query "Stacks[0].Outputs[?OutputKey=='DashboardUrl'].OutputValue" --output text)
+echo "Dashboard (apos o bootstrap): $URL"

@@ -33,13 +33,14 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.gremlin.y
 
 ## Opção B – AWS free tier via CloudFormation (automatizado)
 
-Sobe uma EC2 t3.micro, instala Docker, clona este repositório e inicia tudo. Sem portas abertas; acesso via SSM.
+Sobe uma EC2 t3.micro, instala Docker, clona este repositório e inicia tudo. **Demo:** as portas 8080 e 8081 ficam abertas ao mundo (`0.0.0.0/0`) — use só em contas descartáveis e destrua ao final.
 
 ```bash
 export GREMLIN_TEAM_ID=...  GREMLIN_TEAM_SECRET=...
 export REPO_URL=https://github.com/SEU_USUARIO/sre-chaos-lab.git   # repositório público
 ./scripts/deploy.sh              # cria os parâmetros SSM + stack CloudFormation
-./scripts/port-forward.sh 8081   # dashboard em http://localhost:8081
+# o deploy imprime a URL: dashboard em http://<IP-PUBLICO>:8081
+# (alternativa sem porta aberta: ./scripts/port-forward.sh 8081)
 ```
 
 O bootstrap leva ~3–5 min (log em `/var/log/lab-setup.log` na instância).

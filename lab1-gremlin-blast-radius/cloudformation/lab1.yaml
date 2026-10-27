@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Lab 1 SRE Foundation - EC2 free tier com Docker, 3 celulas, loadgen e agente Gremlin.
-  Sem portas abertas (acesso via SSM Session Manager). Cria a propria VPC/subnet publica.
+  DEMO: portas 8080/8081 abertas ao mundo (dashboard no IP publico); SSM Session Manager para shell.
+  Cria a propria VPC/subnet publica.
 
 Parameters:
   InstanceType:
@@ -74,7 +75,10 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref LabVpc
-      GroupDescription: Sem ingress; acesso via SSM Session Manager
+      GroupDescription: DEMO - 8080 (app) e 8081 (dashboard) abertos ao mundo
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 8080, ToPort: 8080, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 8081, ToPort: 8081, CidrIp: 0.0.0.0/0 }
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
@@ -167,3 +171,7 @@ Outputs:
     Value: !Ref LabInstance
   Region:
     Value: !Ref AWS::Region
+  DashboardUrl:
+    Value: !Sub 'http://${LabInstance.PublicIp}:8081'
+  AppUrl:
+    Value: !Sub 'http://${LabInstance.PublicIp}:8080/?customer=7'
