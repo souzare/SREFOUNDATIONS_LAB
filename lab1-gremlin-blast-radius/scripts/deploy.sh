@@ -21,6 +21,7 @@ aws ssm put-parameter --region "$REGION" --overwrite --type SecureString \
 
 aws cloudformation deploy --region "$REGION" --stack-name "$STACK" \
   --template-file "$ROOT/cloudformation/lab1.yaml" \
+  --capabilities CAPABILITY_IAM \
   --parameter-overrides RepoUrl="$REPO_URL" RepoBranch="$BRANCH"
 
 IID=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
