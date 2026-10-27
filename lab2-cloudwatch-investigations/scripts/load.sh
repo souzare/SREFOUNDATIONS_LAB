@@ -3,15 +3,14 @@
 source "$(dirname "$0")/common.sh"
 DURATION="${1:-60}"
 API="$(cfout ApiUrl)"
-declare -A counts
+codes=""   # compativel com bash 3.2 (macOS): sem arrays associativos
 end=$((SECONDS + DURATION))
 echo "Enviando carga para $API/orders por ${DURATION}s..."
 while [ $SECONDS -lt $end ]; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/orders" \
     -H 'content-type: application/json' -d '{"item":"widget"}')
-  counts[$code]=$(( ${counts[$code]:-0} + 1 ))
-  line=""
-  for k in "${!counts[@]}"; do line+="$k=${counts[$k]}  "; done
+  codes="$codes$code"$'\n'
+  line=$(printf '%s' "$codes" | sort | uniq -c | awk '{printf "%s=%s  ", $2, $1}')
   printf '\r%s' "$line"
   sleep 0.5
 done
