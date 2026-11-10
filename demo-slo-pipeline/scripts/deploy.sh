@@ -41,10 +41,19 @@ fi
 echo "      $REPO_SLUG (publico, demo presente na main)"
 
 echo "[3/5] Detectando o provider OIDC do GitHub na conta..."
-PROVIDER="$(aws iam list-open-id-connect-providers \
-  --query "OpenIDConnectProviderList[?ends_with(Arn,'token.actions.githubusercontent.com')].Arn | [0]" --output text)"
-[[ "$PROVIDER" == "None" ]] && PROVIDER=""
-echo "      ${PROVIDER:-nenhum (o stack vai criar)}"
+# O provider pode ser do PROPRIO stack (criado numa execucao anterior) ou de outra origem. Se for do stack,
+# GitHubOidcProviderArn tem que ficar VAZIO: informar o ARN faria o CloudFormation apagar o provider.
+OWN="$(aws cloudformation describe-stack-resource --stack-name "$STACK" --logical-resource-id GitHubOidcProvider \
+  --query StackResourceDetail.ResourceStatus --output text 2>/dev/null || echo NONE)"
+if [[ "$OWN" == "CREATE_COMPLETE" || "$OWN" == "UPDATE_COMPLETE" ]]; then
+  PROVIDER=""
+  echo "      gerenciado por este stack (parametro fica vazio)"
+else
+  PROVIDER="$(aws iam list-open-id-connect-providers \
+    --query "OpenIDConnectProviderList[?ends_with(Arn,'token.actions.githubusercontent.com')].Arn | [0]" --output text)"
+  [[ "$PROVIDER" == "None" ]] && PROVIDER=""
+  echo "      ${PROVIDER:-nenhum (o stack vai criar)}"
+fi
 
 echo "[4/5] Criando o stack $STACK (8 a 12 min: so termina quando Docker, app e Datadog Agent estao no ar)..."
 STATUS="$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo NONE)"

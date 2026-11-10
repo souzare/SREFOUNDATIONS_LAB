@@ -98,7 +98,7 @@ Com isso, os passos 1 a 6 da Opção B abaixo não são necessários. Siga para 
 | `DatadogSite` | O site da sua conta (`datadoghq.com`, `datadoghq.eu`, `us5.datadoghq.com`...) |
 | `GitHubRepo` | `owner/repo` do repositório público (ex. `souzare/SREFOUNDATIONS_LAB`) |
 | `InstanceType` | `t3.micro` (free tier); se ficar lenta, `t3.small` |
-| `GitHubOidcProviderArn` | **Deixe vazio.** Só preencha se a criação falhar com "EntityAlreadyExists": a conta já tem o provider do GitHub (IAM → Identity providers → `token.actions.githubusercontent.com`); cole o ARN dele |
+| `GitHubOidcProviderArn` | **Deixe vazio.** Só preencha se a criação falhar com "EntityAlreadyExists": a conta já tem o provider do GitHub (IAM → Identity providers → `token.actions.githubusercontent.com`); cole o ARN dele. **Em atualizações do stack, mantenha vazio**: preencher o ARN do provider que o próprio stack criou faz o CloudFormation **apagá-lo** (e o pipeline passa a falhar com "web identity token could not be validated") |
 | `RepoBranch` | `main` |
 
 4. **Next → Next**, marque *"I acknowledge that AWS CloudFormation might create IAM resources"* → **Submit**.
@@ -303,6 +303,8 @@ Nos dois casos o próprio stack esvazia o bucket de artefatos e apaga os parâme
 | Stack falha em `InitSecrets` | A Lambda não conseguiu gravar no SSM | Veja a mensagem em **Events** e o log da função no CloudWatch |
 | Stack falha em `DemoInstance` (timeout/sinal) | O bootstrap da EC2 falhou (rede, GitHub ou memória) | Recrie com *Preserve successfully provisioned resources* e leia `/var/log/demo-setup.log` |
 | Stack falha com `EntityAlreadyExists` no provider OIDC | A conta já tem o provider do GitHub | Preencha `GitHubOidcProviderArn` com o ARN existente |
+| `Could not assume role with OIDC: The web identity token provided could not be validated` | O provider OIDC não existe mais na conta (uma atualização do stack com `GitHubOidcProviderArn` preenchido o apagou) | `aws iam list-open-id-connect-providers` deve listar `token.actions.githubusercontent.com`. Se vier vazio, atualize o stack com `GitHubOidcProviderArn` **vazio** (o `deploy.sh` atual já faz isso) |
+| `Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity` com a role e o repositório certos | O GitHub emite o `sub` com IDs imutáveis (`repo:owner@ID/repo@ID:ref:...`) e a confiança da role esperava o formato sem IDs | Use o template atual (aceita os dois formatos) e atualize o stack. Para ver o `sub` real: CloudTrail → *Event history* → evento `AssumeRoleWithWebIdentity` → campo `userName` |
 | Ação do `demo-ops` falha em "Credenciais" | A variável `AWS_ROLE_ARN` não existe ou a role não confia neste repositório | Confira o valor da variável (A4) e o parâmetro `GitHubRepo` do stack |
 | `prepare` falha em `checkout ref: demo` | A branch `demo` não existe | Rode a ação `reset` do `demo-ops` (cria a branch) |
 | Métricas não chegam ao Datadog | `DD_SITE` errado, ou Agent sem memória | Session Manager na EC2: `docker logs datadog-agent 2>&1 \| tail -30`; confira o site; use `t3.small` |

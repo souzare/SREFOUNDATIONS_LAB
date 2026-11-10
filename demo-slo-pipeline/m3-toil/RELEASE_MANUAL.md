@@ -37,7 +37,20 @@ curl -s http://127.0.0.1:8001/health
 ```
 
 ## 6. Observar o canário
-Abra o dashboard do Datadog e espere alguns minutos olhando o SLI da `cell-a`.
+Neste ponto da aula **o dashboard ainda não existe** (ele é criado no M4). Use o **Metrics Explorer** do Datadog
+(*Metrics → Explorer*) e espere alguns minutos olhando o SLI da `cell-a` na versão nova:
+
+1. Consulta **a:** métrica `sre.requests.good`, filtro `cell:cell-a`, `sum by` → `version`.
+2. Consulta **b:** métrica `sre.requests.total`, filtro `cell:cell-a`, `sum by` → `version`.
+3. Fórmula: `a / b * 100`. Se a tela não mostrar o campo de fórmula, use *Advanced...* e escreva as consultas
+   `sum:sre.requests.good{cell:cell-a} by {version}.as_count()` e `sum:sre.requests.total{cell:cell-a} by {version}.as_count()`.
+
+A linha da `1.1.0` aparece ~1 a 2 min depois do deploy (atraso normal do Datadog). Esse é o gesto manual de "olhar o gráfico
+e decidir" que o gate do M5 vai substituir.
+
+> Alternativa: rode `create-dashboard` (ação do `demo-ops`) **antes** do M3, já que os SLOs do M2 existem. O dashboard se chama
+> **"SRE Demo - Células e SLOs"** (*Dashboards → Dashboard List*) e o gráfico é *"Requisições por célula e versão"* mais
+> *"Sucesso por célula (%)"*. Mas então o M4 deixa de "revelar" o dashboard como novidade.
 
 ## 7. Repetir para as outras células
 ```bash

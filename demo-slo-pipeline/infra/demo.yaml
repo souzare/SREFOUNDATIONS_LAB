@@ -326,9 +326,20 @@ Resources:
                 'token.actions.githubusercontent.com:aud': sts.amazonaws.com
               StringLike:
                 'token.actions.githubusercontent.com:sub':
+                  # O GitHub passou a emitir o sub com IDs imutaveis (repo:owner@ID/repo@ID:...).
+                  # Aceita os dois formatos; o '@' ancora o dono, entao 'owner-parecido' nao casa.
                   - !Sub 'repo:${GitHubRepo}:ref:refs/heads/main'
+                  - !Sub
+                    - 'repo:${Owner}@*/${Repo}@*:ref:refs/heads/main'
+                    - { Owner: !Select [0, !Split ['/', !Ref GitHubRepo]], Repo: !Select [1, !Split ['/', !Ref GitHubRepo]] }
                   - !Sub 'repo:${GitHubRepo}:ref:refs/heads/demo'
+                  - !Sub
+                    - 'repo:${Owner}@*/${Repo}@*:ref:refs/heads/demo'
+                    - { Owner: !Select [0, !Split ['/', !Ref GitHubRepo]], Repo: !Select [1, !Split ['/', !Ref GitHubRepo]] }
                   - !Sub 'repo:${GitHubRepo}:environment:*'
+                  - !Sub
+                    - 'repo:${Owner}@*/${Repo}@*:environment:*'
+                    - { Owner: !Select [0, !Split ['/', !Ref GitHubRepo]], Repo: !Select [1, !Split ['/', !Ref GitHubRepo]] }
       Policies:
         - PolicyName: demo-pipeline
           PolicyDocument:
