@@ -109,4 +109,4 @@ def admin_fault():
             if "db_latency_ms" in body:
                 fault["db_latency_ms"] = max(0, int(body["db_latency_ms"]))
     with fault_lock:
-        return jsonify(dict(fault), cell=CELL, version=VERSION)
+        return jsonify({**fault, "cell": CELL, "version": VERSION})

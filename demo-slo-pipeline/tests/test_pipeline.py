@@ -101,6 +101,19 @@ class AppTests(unittest.TestCase):
         cell_app.BASE_FAIL_RATE = 100
         self.assertEqual(self.client.get("/").status_code, 500)
 
+    def test_admin_fault_endpoint_answers_200_with_state(self):
+        """O instance/fault.sh usa 'curl -f': qualquer 5xx aqui derruba as ações inject-fault, clear-faults e reset."""
+        r = self.client.post("/admin/fault", json={"error_rate": 30, "db_latency_ms": 800})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["error_rate"], 30.0)
+        self.assertEqual(r.get_json()["db_latency_ms"], 800)
+        self.assertEqual(r.get_json()["version"], cell_app.VERSION)
+
+        r = self.client.post("/admin/fault", json={"error_rate": 0, "db_latency_ms": 0})   # o 'clear'
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.client.get("/admin/fault").status_code, 200)
+        self.assertEqual(self.client.get("/admin/fault").get_json()["error_rate"], 0.0)
+
 
 class DemoToolsTests(unittest.TestCase):
     def test_slide_examples(self):

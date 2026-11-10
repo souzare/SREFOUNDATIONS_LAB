@@ -299,6 +299,7 @@ Nos dois casos o próprio stack esvazia o bucket de artefatos e apaga os parâme
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
+| `inject-fault`, `clear-faults` ou `reset` falham com `curl: (22) ... error: 500` (ou `HTTP 500` do `fault.sh`) | A imagem das células na EC2 é antiga: o código do app mudou na `main`, mas a EC2 só constrói a imagem base uma vez | Publique a correção na `main` e rode a ação **`rebuild-base`** do `demo-ops` (reconstrói a imagem e recria as 3 células); depois rode `reset` |
 | `check-datadog` falha com HTTP 403 | A chave de aplicação não tem permissão de SLO, ou o plano não inclui SLOs | Gere a chave com um usuário administrador; confira o plano em *Plan & Usage*; corrija atualizando o stack com as chaves novas |
 | Stack falha em `InitSecrets` | A Lambda não conseguiu gravar no SSM | Veja a mensagem em **Events** e o log da função no CloudWatch |
 | Stack falha em `DemoInstance` (timeout/sinal) | O bootstrap da EC2 falhou (rede, GitHub ou memória) | Recrie com *Preserve successfully provisioned resources* e leia `/var/log/demo-setup.log` |

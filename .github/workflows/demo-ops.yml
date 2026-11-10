@@ -11,6 +11,7 @@ on:
         options:
           - status
           - check-datadog
+          - rebuild-base
           - calc-error-budget
           - create-slos
           - create-dashboard
@@ -69,6 +70,7 @@ jobs:
           case "$ACTION" in
             status)             cmd=(./scripts/status.sh) ;;
             check-datadog)      cmd=(./scripts/check-datadog.sh) ;;
+            rebuild-base)       cmd=(./scripts/rebuild-base.sh) ;;
             calc-error-budget)  cmd=(python3 m2-slo/calc_error_budget.py) ;;
             create-slos)        cmd=(./m2-slo/create-slos.sh) ;;
             create-dashboard)   cmd=(./m4-observabilidade/create-dashboard.sh) ;;

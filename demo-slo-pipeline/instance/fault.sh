@@ -18,6 +18,12 @@ if [[ "$cell" == "all" ]]; then cells="a b c"; else cells="${cell#cell-}"; fi
 for letter in $cells; do
   port=$((8000 + $(printf '%d' "'$letter") - 96))
   printf 'cell-%s: ' "$letter"
-  curl -fsS -X POST "http://127.0.0.1:$port/admin/fault" -H 'Content-Type: application/json' -d "$body"
-  echo
+  resp="$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$port/admin/fault" \
+    -H 'Content-Type: application/json' -d "$body")"
+  code="${resp##*$'\n'}"
+  echo "${resp%$'\n'*}"
+  if [[ "$code" != 2* ]]; then
+    echo "cell-$letter: HTTP $code (a imagem da celula pode estar desatualizada: rode a acao rebuild-base)" >&2
+    exit 1
+  fi
 done
