@@ -1,0 +1,14 @@
+step,minutes,manual,repetitive,automatable,tactical,no_lasting_value,scales_linearly
+Revisar o codigo da mudanca (code review),15,1,0,0,0,0,0
+Abrir sessao SSM na EC2,2,1,1,1,1,1,1
+Atualizar o codigo na maquina (git pull),1,1,1,1,1,1,1
+Editar a versao em app/config.json,2,1,1,1,1,1,1
+Construir a imagem (docker build),4,1,1,1,1,1,1
+Subir a cell-a com a versao nova (compose up),1,1,1,1,1,1,1
+Conferir /health da cell-a,1,1,1,1,1,1,1
+Observar o dashboard por alguns minutos (canario),5,1,1,1,1,1,1
+Repetir os passos de subir/conferir na cell-b,6,1,1,1,1,1,1
+Repetir os passos de subir/conferir na cell-c,6,1,1,1,1,1,1
+Decidir "no olho" se o SLO permite soltar,3,1,1,1,1,1,1
+Avisar o time no chat,2,1,1,1,1,1,1
+Registrar o release no changelog,3,1,1,1,1,1,1

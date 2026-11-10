@@ -1,0 +1,85 @@
+name: demo-ops
+
+# Botões da aula (M2 a M5). Tudo roda na nuvem: o runner do GitHub assume a role da AWS por OIDC,
+# fala com a EC2 por SSM e com a API do Datadog. Actions > demo-ops > Run workflow > escolha a ação.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'O que fazer'
+        type: choice
+        options:
+          - status
+          - check-datadog
+          - calc-error-budget
+          - create-slos
+          - create-dashboard
+          - check-budget
+          - inject-fault
+          - clear-faults
+          - toil-roi
+          - reset
+        default: status
+      cell:
+        description: 'inject-fault: célula alvo'
+        type: choice
+        options: [cell-b, cell-a, cell-c, all]
+        default: cell-b
+      fault:
+        description: 'inject-fault: tipo (error = % de erros 500; latency = ms no span db.query)'
+        type: choice
+        options: [error, latency]
+        default: error
+      value:
+        description: 'inject-fault: valor (ex. 30 para 30% de erro, ou 800 para 800 ms)'
+        type: string
+        default: '30'
+
+permissions:
+  contents: write     # só o reset usa (redefine a branch demo)
+  id-token: write
+
+concurrency:
+  group: demo-ops
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/demo-env
+        with:
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Executar a ação
+        working-directory: demo-slo-pipeline
+        env:
+          ACTION: ${{ inputs.action }}
+          CELL: ${{ inputs.cell }}
+          FAULT: ${{ inputs.fault }}
+          VALUE: ${{ inputs.value }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            status)             cmd=(./scripts/status.sh) ;;
+            check-datadog)      cmd=(./scripts/check-datadog.sh) ;;
+            calc-error-budget)  cmd=(python3 m2-slo/calc_error_budget.py) ;;
+            create-slos)        cmd=(./m2-slo/create-slos.sh) ;;
+            create-dashboard)   cmd=(./m4-observabilidade/create-dashboard.sh) ;;
+            check-budget)       cmd=(./scripts/check-budget.sh) ;;
+            clear-faults)       cmd=(./scripts/inject-fault.sh all clear) ;;
+            toil-roi)           cmd=(python3 m3-toil/toil_roi.py --releases 8 --automation-hours 16) ;;
+            reset)              cmd=(./scripts/reset.sh -y) ;;
+            inject-fault)
+              [[ "$VALUE" =~ ^[0-9]+$ ]] || { echo "value deve ser numérico"; exit 1; }
+              cmd=(./scripts/inject-fault.sh "$CELL" "$FAULT" "$VALUE") ;;
+            *) echo "ação desconhecida: $ACTION"; exit 1 ;;
+          esac
+          "${cmd[@]}" 2>&1 | tee out.txt
+          { echo "### $ACTION"; echo '```'; cat out.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

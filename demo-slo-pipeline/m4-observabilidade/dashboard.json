@@ -1,0 +1,28 @@
+{
+  "title": "SRE Demo - Células e SLOs",
+  "description": "Dashboard da demo SRE Foundation (M4). SLIs por célula, versão em produção e logs de erro.",
+  "layout_type": "ordered",
+  "template_variables": [{"name": "run", "prefix": "demo_run", "default": "__RUN__"}],
+  "widgets": [
+    {"definition": {"type": "slo", "title": "Disponibilidade", "slo_id": "__SLO_AVAIL__", "view_type": "detail", "view_mode": "overall", "time_windows": ["7d"], "show_error_budget": true}},
+    {"definition": {"type": "slo", "title": "Latência", "slo_id": "__SLO_LAT__", "view_type": "detail", "view_mode": "overall", "time_windows": ["7d"], "show_error_budget": true}},
+    {"definition": {
+      "type": "timeseries", "title": "Sucesso por célula (%) - SLI de disponibilidade",
+      "requests": [{"q": "100 * sum:sre.requests.good{$run} by {cell}.as_count() / sum:sre.requests.total{$run} by {cell}.as_count()", "display_type": "line"}],
+      "markers": [{"value": "y = 99", "display_type": "error dashed", "label": "SLO 99%"}],
+      "yaxis": {"min": "90", "max": "100"}}},
+    {"definition": {
+      "type": "timeseries", "title": "p95 de latência por célula (ms)",
+      "requests": [{"q": "max:sre.request.latency.95percentile{$run} by {cell}", "display_type": "line"}],
+      "markers": [{"value": "y = 300", "display_type": "error dashed", "label": "limite 300 ms"}]}},
+    {"definition": {
+      "type": "timeseries", "title": "Requisições por célula e versão (acompanha o canário)",
+      "requests": [{"q": "sum:sre.requests.total{$run} by {cell,version}.as_count()", "display_type": "bars"}]}},
+    {"definition": {
+      "type": "log_stream", "title": "Erros do cell-app",
+      "query": "service:cell-app @http_status:500",
+      "columns": ["host", "service"], "indexes": [],
+      "message_display": "expanded-md", "show_date_column": true, "show_message_column": true,
+      "sort": {"column": "time", "order": "desc"}}}
+  ]
+}

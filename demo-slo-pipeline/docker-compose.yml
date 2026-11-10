@@ -1,0 +1,90 @@
+name: sre-demo
+
+# Cada célula usa uma versão própria (CELL_x_VERSION no .env): é isso que permite o deploy canário
+# (só a cell-a recebe a versão nova) e o rollback sem derrubar as outras.
+x-cell: &cell
+  pull_policy: never        # a imagem vem do bootstrap ou do artefato no S3, nunca do Docker Hub
+  restart: unless-stopped
+  mem_limit: 160m
+  depends_on: [datadog-agent]
+
+x-cell-env: &cell-env
+  DD_SERVICE: cell-app
+  DD_ENV: demo
+  DD_AGENT_HOST: datadog-agent
+  DD_LOGS_INJECTION: "true"
+
+x-logs: &cell-labels
+  com.datadoghq.ad.logs: '[{"source": "python", "service": "cell-app"}]'
+
+services:
+  cell-a:
+    <<: *cell
+    image: sre-demo/cell-app:${CELL_A_VERSION:-1.0.0}
+    container_name: cell-a
+    environment: { <<: *cell-env, CELL_NAME: cell-a, DD_VERSION: "${CELL_A_VERSION:-1.0.0}" }
+    labels: *cell-labels
+    ports: ["127.0.0.1:8001:8000"]   # admin/health só no host (usado pelos scripts)
+
+  cell-b:
+    <<: *cell
+    image: sre-demo/cell-app:${CELL_B_VERSION:-1.0.0}
+    container_name: cell-b
+    environment: { <<: *cell-env, CELL_NAME: cell-b, DD_VERSION: "${CELL_B_VERSION:-1.0.0}" }
+    labels: *cell-labels
+    ports: ["127.0.0.1:8002:8000"]
+
+  cell-c:
+    <<: *cell
+    image: sre-demo/cell-app:${CELL_C_VERSION:-1.0.0}
+    container_name: cell-c
+    environment: { <<: *cell-env, CELL_NAME: cell-c, DD_VERSION: "${CELL_C_VERSION:-1.0.0}" }
+    labels: *cell-labels
+    ports: ["127.0.0.1:8003:8000"]
+
+  router:
+    image: nginx:1.27-alpine
+    container_name: router
+    restart: unless-stopped
+    mem_limit: 32m
+    volumes: ["./router/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [cell-a, cell-b, cell-c]
+
+  loadgen:
+    pull_policy: never
+    image: sre-demo/loadgen:latest
+    container_name: loadgen
+    restart: unless-stopped
+    mem_limit: 96m
+    environment:
+      TARGET: http://router
+      CUSTOMERS: "30"
+      DEMO_RUN: ${DEMO_RUN:-run-local}
+      DD_DOGSTATSD_HOST: datadog-agent
+    ports: ["127.0.0.1:8081:8081"]
+    depends_on: [router]
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "python", "service": "loadgen"}]'
+
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    container_name: datadog-agent
+    restart: unless-stopped
+    mem_limit: 450m
+    environment:
+      DD_API_KEY: ${DD_API_KEY:?defina DD_API_KEY no .env}
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+      DD_HOSTNAME: sre-demo-host
+      DD_ENV: demo
+      DD_APM_ENABLED: "true"
+      DD_APM_NON_LOCAL_TRAFFIC: "true"
+      DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
+      DD_PROCESS_AGENT_ENABLED: "false"     # economiza memória na t3.micro
+      DD_CONTAINER_EXCLUDE: "name:datadog-agent"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro

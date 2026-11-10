@@ -1,0 +1,221 @@
+name: demo-slo-pipeline
+
+# Pipeline da demo SRE Foundation (M5): publica o release na branch demo -> lint e testes -> build
+# versionado -> gate de SLO -> canário (cell-a) com verificação de SLI e rollback automático -> promoção.
+# Dispare por Actions > demo-slo-pipeline > Run workflow (escolha o release), ou editando
+# demo-slo-pipeline/app/config.json na branch demo pela interface do GitHub.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release a publicar na branch demo (none = só roda o pipeline sobre o que já está lá)'
+        type: choice
+        options: [none, good, bad, fix]
+        default: none
+      override:
+        description: 'Ignorar o gate de SLO (exige aprovação no environment slo-override)'
+        type: boolean
+        default: false
+      reason:
+        description: 'Justificativa da exceção (vai para o log)'
+        type: string
+        default: ''
+  push:
+    branches: [demo]
+    paths: ['demo-slo-pipeline/app/**']
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: demo-release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: demo
+      - name: Publicar o release na branch demo
+        id: release
+        env:
+          KIND: ${{ inputs.release }}
+        run: |
+          cfg=demo-slo-pipeline/app/config.json
+          if [ -n "$KIND" ] && [ "$KIND" != "none" ]; then
+            IFS=. read -r major minor patch <<<"$(jq -r .version "$cfg")"
+            case "$KIND" in
+              good) version="$major.$((minor + 1)).0"; rate=0 ;;   # minor, sem regressão
+              bad)  version="$major.$((minor + 1)).0"; rate=5 ;;   # minor com regressão simulada: 5% de 500
+              fix)  version="$major.$minor.$((patch + 1))"; rate=0 ;;
+            esac
+            jq --arg v "$version" --argjson r "$rate" '.version = $v | .fail_rate = $r' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+            git config user.name "demo-pipeline"
+            git config user.email "demo-pipeline@users.noreply.github.com"
+            git add "$cfg"
+            git commit -m "release $version ($KIND)"
+            git push origin HEAD:demo
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r .version "$cfg")" >> "$GITHUB_OUTPUT"
+
+  lint-test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dependências de teste
+        run: pip install flask==3.0.3 cfn-lint
+      - name: Lint do template CloudFormation
+        run: cfn-lint demo-slo-pipeline/infra/demo.yaml
+      - name: Sintaxe dos scripts
+        run: |
+          for f in demo-slo-pipeline/scripts/*.sh demo-slo-pipeline/instance/*.sh demo-slo-pipeline/m*/*.sh; do
+            bash -n "$f"
+          done
+      - name: Testes unitários
+        run: python -m unittest discover -s demo-slo-pipeline/tests -v
+
+  build:
+    needs: [prepare, lint-test]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ needs.prepare.outputs.version }}
+      key: ${{ steps.meta.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Chave do artefato
+        id: meta
+        run: echo "key=artifacts/cell-app/${{ needs.prepare.outputs.version }}-${GITHUB_SHA::7}.tar.gz" >> "$GITHUB_OUTPUT"
+      - name: Build da imagem
+        run: docker build -t "sre-demo/cell-app:${{ needs.prepare.outputs.version }}" demo-slo-pipeline/app
+      - name: Smoke test do container
+        run: |
+          docker run -d --name smoke -p 8000:8000 "sre-demo/cell-app:${{ needs.prepare.outputs.version }}"
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8000/health && exit 0; sleep 1; done
+          docker logs smoke; exit 1
+      - uses: ./.github/actions/demo-env
+        with:
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Publicar o artefato versionado no S3
+        run: |
+          docker save "sre-demo/cell-app:${{ needs.prepare.outputs.version }}" | gzip > cell-app.tar.gz
+          aws s3 cp cell-app.tar.gz "s3://$ARTIFACT_BUCKET/${{ steps.meta.outputs.key }}"
+
+  slo-gate:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    outputs:
+      blocked: ${{ steps.gate.outputs.blocked }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/demo-env
+        with:
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Gate de SLO (política de error budget)
+        id: gate
+        env:
+          OVERRIDE: ${{ inputs.override }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set +e
+          python demo-slo-pipeline/m5-pipeline-slo-gate/slo_gate.py
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            echo "blocked=true" >> "$GITHUB_OUTPUT"
+            if [ "$OVERRIDE" != "true" ]; then
+              echo "::error::Deploy bloqueado: o orçamento de erro acabou (política de error budget)."
+              exit 1
+            fi
+            echo "::warning::Gate ignorado por override. Motivo: $REASON"
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          else
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  override-approval:
+    needs: slo-gate
+    if: ${{ needs.slo-gate.outputs.blocked == 'true' }}
+    runs-on: ubuntu-latest
+    environment: slo-override        # configure um revisor obrigatório neste environment
+    steps:
+      - env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          echo "Override aprovado. Motivo: $REASON"
+
+  deploy-canary:
+    needs: [prepare, build, slo-gate, override-approval]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.slo-gate.result == 'success' && (needs.override-approval.result == 'success' || needs.override-approval.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/demo-env
+        with:
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Deploy canário na cell-a
+        run: |
+          demo-slo-pipeline/scripts/remote.sh "cd /opt/lab/demo-slo-pipeline && instance/release.sh cell-a ${{ needs.build.outputs.version }} ${{ needs.build.outputs.key }}"
+      - name: Verificar o SLI do canário
+        id: verify
+        continue-on-error: true
+        env:
+          CANARY_VERSION: ${{ needs.build.outputs.version }}
+          CANARY_SECONDS: '150'
+        run: python demo-slo-pipeline/m5-pipeline-slo-gate/canary_verify.py
+      - name: Rollback automático da cell-a
+        if: steps.verify.outcome == 'failure'
+        run: |
+          demo-slo-pipeline/scripts/remote.sh "cd /opt/lab/demo-slo-pipeline && instance/release.sh cell-a previous"
+          echo "::error::Canário reprovado: rollback executado na cell-a."
+          exit 1
+
+  promote:
+    needs: [prepare, build, deploy-canary]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: ./.github/actions/demo-env
+        with:
+          role-arn: ${{ vars.AWS_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+      - name: Promover para cell-b e cell-c
+        run: |
+          for cell in cell-b cell-c; do
+            demo-slo-pipeline/scripts/remote.sh "cd /opt/lab/demo-slo-pipeline && instance/release.sh $cell ${{ needs.build.outputs.version }}"
+          done

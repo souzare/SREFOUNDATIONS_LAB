@@ -1,0 +1,19 @@
+name: demo-env
+description: Assume a role AWS via OIDC e carrega a configuração da demo (SSM) para o ambiente do job
+inputs:
+  role-arn:
+    description: ARN da role que o GitHub Actions assume
+    required: true
+  region:
+    description: Região AWS
+    default: us-east-1
+runs:
+  using: composite
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.region }}
+    - name: Carregar configuração da demo (SSM)
+      shell: bash
+      run: demo-slo-pipeline/scripts/ci-env.sh "$GITHUB_ENV"

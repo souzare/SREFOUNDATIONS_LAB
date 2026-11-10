@@ -1,0 +1,360 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Demo SLO + pipeline (SRE Foundation M2-M5). EC2 com Docker e Datadog Agent, bucket de artefatos
+  e role OIDC para o GitHub Actions. Sem portas abertas (acesso via SSM). Cria a propria VPC publica.
+  Cria o stack inteiro: nao ha script de setup. Ao terminar (CREATE_COMPLETE) o ambiente esta no ar.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: Free tier. Se ficar lento, use t3.small (centavos por hora).
+  DatadogApiKey:
+    Type: String
+    NoEcho: true
+    Description: DD_API_KEY (Organization Settings > API Keys). Fica no SSM Parameter Store como SecureString.
+  DatadogAppKey:
+    Type: String
+    NoEcho: true
+    Description: DD_APP_KEY (Application Keys). Precisa criar SLOs, monitores e dashboards.
+  DatadogSite:
+    Type: String
+    Default: datadoghq.com
+    Description: Site da conta Datadog (datadoghq.com, datadoghq.eu, us5.datadoghq.com...)
+  RepoBranch:
+    Type: String
+    Default: main
+  GitHubRepo:
+    Type: String
+    Description: owner/repo publico com esta demo; a EC2 clona dele e a role do pipeline confia nele (ex. souzare/SREFOUNDATIONS_LAB)
+  GitHubOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: ARN do provider OIDC do GitHub se a conta ja tiver um (so existe um por conta). Vazio = criar.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref GitHubOidcProviderArn, '']
+
+Resources:
+  DemoVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.78.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: sre-demo-vpc }
+
+  DemoIgw:
+    Type: AWS::EC2::InternetGateway
+
+  DemoIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref DemoVpc
+      InternetGatewayId: !Ref DemoIgw
+
+  DemoSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DemoVpc
+      CidrBlock: 10.78.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - { Key: Name, Value: sre-demo-public }
+
+  DemoRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DemoVpc
+
+  DemoDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: DemoIgwAttachment
+    Properties:
+      RouteTableId: !Ref DemoRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DemoIgw
+
+  DemoSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DemoSubnet
+      RouteTableId: !Ref DemoRouteTable
+
+  DemoSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref DemoVpc
+      GroupDescription: Sem ingress; acesso via SSM Session Manager
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - { Id: expire-artifacts, Status: Enabled, ExpirationInDays: 14 }
+
+  InitFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: init
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ssm:PutParameter, ssm:DeleteParameter]
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/sre-demo/*'
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ArtifactBucket.Arn
+              - Effect: Allow
+                Action: s3:DeleteObject
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+
+  # O CloudFormation nao cria SecureString. Esta funcao grava as chaves do Datadog no SSM (sem logar os
+  # valores) e, ao apagar o stack, remove os parametros e esvazia o bucket (que impediria a exclusao).
+  InitFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 120
+      Role: !GetAtt InitFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          NAMES = ["dd_api_key", "dd_app_key", "dd_site", "demo_run", "state/slos", "state/dashboard"]
+
+
+          def handler(event, context):
+              props = event["ResourceProperties"]
+              ssm = boto3.client("ssm")
+              try:
+                  if event["RequestType"] in ("Create", "Update"):
+                      put = lambda n, v, t="String": ssm.put_parameter(Name="/sre-demo/" + n, Value=v, Type=t, Overwrite=True)
+                      put("dd_api_key", props["ApiKey"], "SecureString")
+                      put("dd_app_key", props["AppKey"], "SecureString")
+                      put("dd_site", props["Site"])
+                      if event["RequestType"] == "Create":
+                          put("demo_run", props["Run"])
+                  else:
+                      for name in NAMES:
+                          try:
+                              ssm.delete_parameter(Name="/sre-demo/" + name)
+                          except Exception:
+                              pass
+                      bucket = boto3.resource("s3").Bucket(props["Bucket"])
+                      bucket.objects.all().delete()
+              except Exception as exc:
+                  if event["RequestType"] != "Delete":
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {"error": type(exc).__name__}, "sre-demo-init")
+                      return
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, "sre-demo-init")
+
+  InitSecrets:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt InitFunction.Arn
+      ApiKey: !Ref DatadogApiKey
+      AppKey: !Ref DatadogAppKey
+      Site: !Ref DatadogSite
+      Bucket: !Ref ArtifactBucket
+      Run: !Join ['-', ['run', !Select [0, !Split ['-', !Select [2, !Split ['/', !Ref 'AWS::StackId']]]]]]
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: demo-instance
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/sre-demo/*'
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  DemoInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: [DemoDefaultRoute, DemoSubnetRouteAssociation, InitSecrets]
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT20M
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref DemoSubnet
+          GroupSet: [!Ref DemoSecurityGroup]
+          AssociatePublicIpAddress: true
+      MetadataOptions:
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeSize: 20, VolumeType: gp3 }
+      Tags:
+        - { Key: Name, Value: sre-demo }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          exec > >(tee /var/log/demo-setup.log) 2>&1
+
+          dnf install -y docker git jq aws-cfn-bootstrap
+
+          # sinaliza ao CloudFormation: sucesso ao final, falha (com rollback) em qualquer erro
+          trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource DemoInstance --region ${AWS::Region}' ERR
+          systemctl enable --now docker
+
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          # o buildx do AL2023 e antigo; o compose atual exige >= 0.17 para 'build'
+          curl -fsSL https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-amd64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-buildx
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/lib/docker/cli-plugins/docker-buildx
+
+          # swap: Agent + 3 celulas + loadgen em 1 GB de RAM
+          fallocate -l 2G /swapfile
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+          git clone --depth 1 --branch ${RepoBranch} https://github.com/${GitHubRepo}.git /opt/lab
+          cd /opt/lab/demo-slo-pipeline
+
+          DD_API_KEY=$(aws ssm get-parameter --region ${AWS::Region} --name /sre-demo/dd_api_key --with-decryption --query Parameter.Value --output text)
+          DD_SITE=$(aws ssm get-parameter --region ${AWS::Region} --name /sre-demo/dd_site --query Parameter.Value --output text)
+          DEMO_RUN=$(aws ssm get-parameter --region ${AWS::Region} --name /sre-demo/demo_run --query Parameter.Value --output text)
+          VERSION=$(jq -r .version app/config.json)
+
+          cat > .env <<EOF
+          DD_API_KEY=$DD_API_KEY
+          DD_SITE=$DD_SITE
+          DEMO_RUN=$DEMO_RUN
+          CELL_A_VERSION=$VERSION
+          CELL_B_VERSION=$VERSION
+          CELL_C_VERSION=$VERSION
+          AWS_REGION=${AWS::Region}
+          ARTIFACT_BUCKET=${ArtifactBucket}
+          EOF
+          chmod 600 .env
+
+          docker build -t sre-demo/cell-app:$VERSION app/
+          docker build -t sre-demo/loadgen:latest loadgen/
+          docker compose --env-file .env up -d --no-build
+          echo "DEMO READY"
+          /opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource DemoInstance --region ${AWS::Region}
+
+  InstanceIdParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sre-demo/instance_id
+      Type: String
+      Value: !Ref DemoInstance
+
+  ArtifactBucketParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /sre-demo/artifact_bucket
+      Type: String
+      Value: !Ref ArtifactBucket
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList: [6938fd4d98bab03faadb97b34396831e3780aea1]
+
+  GitHubRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [CreateOidcProvider, !Ref GitHubOidcProvider, !Ref GitHubOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+              StringLike:
+                'token.actions.githubusercontent.com:sub':
+                  - !Sub 'repo:${GitHubRepo}:ref:refs/heads/main'
+                  - !Sub 'repo:${GitHubRepo}:ref:refs/heads/demo'
+                  - !Sub 'repo:${GitHubRepo}:environment:*'
+      Policies:
+        - PolicyName: demo-pipeline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/${DemoInstance}'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript'
+              - Effect: Allow
+                Action: [ssm:GetCommandInvocation, ssm:ListCommandInvocations]
+                Resource: '*'
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject]
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter, ssm:DeleteParameter]
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/sre-demo/*'
+
+Outputs:
+  InstanceId:
+    Value: !Ref DemoInstance
+  ArtifactBucket:
+    Value: !Ref ArtifactBucket
+  GitHubRoleArn:
+    Value: !GetAtt GitHubRole.Arn
+  Region:
+    Value: !Ref AWS::Region

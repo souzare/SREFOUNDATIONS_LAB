@@ -9,6 +9,12 @@ Dois laboratórios práticos que complementam o curso **SRE Foundation (DevOps I
 | [Lab 1](lab1-gremlin-blast-radius/) | Chaos Engineering com **Gremlin** em containers: raio da explosão (*blast radius*) e testes célula a célula | M6 (Antifragilidade), M4 (Observabilidade/SLIs) | 60–90 min |
 | [Lab 2](lab2-cloudwatch-investigations/) | Diagnóstico assistido por IA com **Amazon CloudWatch investigations** | M4 (Observabilidade), M7 (Resposta a incidentes / blameless) | 45–60 min |
 
+## Demo SLO + Pipeline (Módulos 2 a 5)
+
+Uma demo única, conduzida pelo instrutor, com **Datadog** e um **pipeline no GitHub Actions** em que o estouro do SLO
+bloqueia o deploy: [demo-slo-pipeline/](demo-slo-pipeline/). O README de lá traz o passo a passo para subir o ambiente,
+o roteiro de cada módulo e o reset para repetir a aula.
+
 ## Estrutura
 
 ```
